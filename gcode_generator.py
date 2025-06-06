@@ -7,7 +7,8 @@ filename = "test.nc"
 blade_width_in = 2.99213
 wax_width_in = 2
 wax_length_in = 4
-z_retract_height_in = 0.04
+z_retract_height_in = 0.04 # height above wax to retract to after each cut
+z_clearance_height_in = 0.5 # height that the machine will rapid move to before moving into the first cut
 cut_depth_in = 0.00393701  # 100um
 cut_spacing_in = 0.0023622  # 60um
 cut_angle_deg = 56
@@ -50,8 +51,24 @@ def rapid_move(x, y, z):
     write(gcode_lines)
 
     # Log rapid move in XZ
-    move_log.append((None, None, x, z, 'rapid'))
+    move_log.append((x, z, 'rapid'))
 
+
+def slow_move_z(z, speed_ipm):
+    gcode_lines = [
+        f"G01 Z{z:.4f} F{speed_ipm:.4f}",
+    ]
+    write(gcode_lines)
+
+    move_log.append((None, z, 'slow'))
+
+def slow_move_x(x, speed_ipm):
+    gcode_lines = [
+        f"G01 X{x:.4f} F{speed_ipm:.4f}",
+    ]
+    write(gcode_lines)
+
+    move_log.append((x, None, 'slow'))
 
 def angular_move(angle_deg: float, current_x: float, current_z: float, z_depth: float, down: bool = False):
     """
@@ -83,40 +100,52 @@ def angular_move(angle_deg: float, current_x: float, current_z: float, z_depth: 
     write(gcode_lines)
 
     move_type = 'cut' if down else 'retract'
-    move_log.append((current_x, current_z, target_x, target_z, move_type))
+    move_log.append((target_x, target_z, move_type))
 
     return target_x, target_z
 
 
 def plot_moves():
     fig, ax = plt.subplots()
-    #plot only first 50 moves
-    for move in move_log[:50]:
-        x0, z0, x1, z1, move_type = move
 
-        # For rapid moves, we don't know where it came from; skip unless we know start
-        if x0 is None or z0 is None:
-            continue
+    last_x, last_z = 0.0, 0.0  # Start at origin or set initial known position
+    for move in move_log[:50]:  # Limit to first 50
+        x, z, move_type = move
 
-        if move_type == 'rapid':
-            ax.plot([x0, x1], [z0, z1], linestyle='--', color='blue', label='Rapid Move')
-        elif move_type == 'cut':
-            ax.plot([x0, x1], [z0, z1], color='red', label='Cut Down')
-        elif move_type == 'retract':
-            ax.plot([x0, x1], [z0, z1], color='green', label='Retract Up')
+        x = x if x is not None else last_x
+        z = z if z is not None else last_z
+
+        color = {
+            'rapid': 'blue',
+            'cut': 'red',
+            'retract': 'green',
+            'slow': 'orange'
+        }.get(move_type, 'black')
+
+        style = '--' if move_type in ('rapid', 'slow') else '-'
+
+        label = {
+            'rapid': 'Rapid Move',
+            'cut': 'Cut Down',
+            'retract': 'Retract Up',
+            'slow': 'Slow Z Move'
+        }.get(move_type, 'Other')
+
+        ax.plot([last_x, x], [last_z, z], linestyle=style, color=color, label=label)
+
+        last_x, last_z = x, z  # Update for next segment
 
     ax.set_xlabel('X (inches)')
     ax.set_ylabel('Z (inches)')
     ax.set_title('XZ Toolpath')
     ax.grid(True)
 
-    # Add unique legend
+    # Unique legend
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     plt.legend(by_label.values(), by_label.keys())
 
     plt.show()
-
 
 def main():
     if os.path.exists(filename):
@@ -125,15 +154,16 @@ def main():
 
     y_position = -(blade_width_in / 2) - (wax_width_in / 2)
 
-    last_x, last_z = 0, z_retract_height_in
-    rapid_move(last_x, y_position, last_z)
+    rapid_move(0, y_position, z_clearance_height_in)
+    slow_move_z(z_retract_height_in, 25)
+    # rapid_move(retracted_x, y_position, z_retract_height_in)
 
     for i in range(int(wax_length_in / cut_spacing_in)):
         retracted_x = i * cut_spacing_in
 
         # Log rapid move (assume last_x, last_z known)
-        move_log.append((last_x, last_z, retracted_x, z_retract_height_in, 'rapid'))
-        rapid_move(retracted_x, y_position, z_retract_height_in)
+        # move_log.append((last_x, last_z, retracted_x, z_retract_height_in, 'rapid'))
+        slow_move_x(retracted_x, 1)
 
         # Move down
         inserted_x_pos, inserted_z_pos = angular_move(
